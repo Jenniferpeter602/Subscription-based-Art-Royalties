@@ -551,3 +551,101 @@
         (map-get? referral-stats referrer)
     )
 )
+
+
+
+(define-map collaborations
+    {collaboration-id: uint, artist1: principal, artist2: principal}
+    {
+        title: (string-ascii 100),
+        start-block: uint,
+        end-block: uint,
+        revenue-split: uint,
+        active: bool
+    }
+)
+
+(define-data-var next-collab-id uint u1)
+
+(define-public (create-collaboration 
+    (collaborator principal)
+    (title (string-ascii 100))
+    (duration uint)
+    (split uint))
+    (let
+        ((collab-id (var-get next-collab-id))
+         (current-block stacks-block-height))
+        (asserts! (and (>= split u1) (<= split u99)) (err u200))
+        (ok (map-set collaborations
+            {collaboration-id: collab-id,
+             artist1: tx-sender,
+             artist2: collaborator}
+            {
+                title: title,
+                start-block: current-block,
+                end-block: (+ current-block duration),
+                revenue-split: split,
+                active: true
+            }))
+    )
+)
+
+(define-read-only (get-collaboration (collab-id uint))
+    (map-get? collaborations 
+        {collaboration-id: collab-id,
+         artist1: tx-sender,
+         artist2: tx-sender}
+    )
+)
+
+
+
+(define-map subscription-bundles
+    {bundle-id: uint}
+    {
+        artists: (list 5 principal),
+        bundle-price: uint,
+        duration: uint,
+        max-purchases: uint,
+        purchases: uint,
+        active: bool
+    }
+)
+
+(define-data-var next-bundle-id uint u1)
+
+(define-public (create-subscription-bundle 
+    (artists (list 5 principal))
+    (bundle-price uint)
+    (duration uint)
+    (max-purchases uint))
+    (let
+        ((bundle-id (var-get next-bundle-id)))
+        (var-set next-bundle-id (+ bundle-id u1))
+        (ok (map-set subscription-bundles
+            {bundle-id: bundle-id}
+            {
+                artists: artists,
+                bundle-price: bundle-price,
+                duration: duration,
+                max-purchases: max-purchases,
+                purchases: u0,
+                active: true
+            }))
+    )
+)
+
+(define-public (purchase-bundle (bundle-id uint))
+    (let
+        ((bundle (unwrap! (map-get? subscription-bundles {bundle-id: bundle-id}) (err u300)))
+         (current-block stacks-block-height)
+         (first-artist (unwrap! (element-at (get artists bundle) u0) (err u303))))
+        (asserts! (get active bundle) (err u301))
+        (asserts! (< (get purchases bundle) (get max-purchases bundle)) (err u302))
+        (try! (stx-transfer? (get bundle-price bundle) tx-sender first-artist))
+        (map-set subscription-bundles
+            {bundle-id: bundle-id}
+            (merge bundle {purchases: (+ (get purchases bundle) u1)}))
+        (ok true)
+    )
+)
