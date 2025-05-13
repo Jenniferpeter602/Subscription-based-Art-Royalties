@@ -649,3 +649,125 @@
         (ok true)
     )
 )
+
+
+(define-map artist-challenges
+    {challenge-id: uint}
+    {
+        artist: principal,
+        title: (string-ascii 100),
+        prize-amount: uint,
+        start-block: uint,
+        end-block: uint,
+        max-entries: uint,
+        current-entries: uint,
+        winner: (optional principal),
+        active: bool
+    }
+)
+
+(define-map challenge-entries
+    {challenge-id: uint, participant: principal}
+    {
+        submission-url: (string-ascii 200),
+        submission-block: uint
+    }
+)
+
+(define-data-var next-challenge-id uint u1)
+
+(define-public (create-challenge 
+    (title (string-ascii 100))
+    (prize-amount uint)
+    (duration uint)
+    (max-entries uint))
+    (let ((challenge-id (var-get next-challenge-id)))
+        (try! (stx-transfer? prize-amount tx-sender (as-contract tx-sender)))
+        (var-set next-challenge-id (+ challenge-id u1))
+        (ok (map-set artist-challenges
+            {challenge-id: challenge-id}
+            {
+                artist: tx-sender,
+                title: title,
+                prize-amount: prize-amount,
+                start-block: stacks-block-height,
+                end-block: (+ stacks-block-height duration),
+                max-entries: max-entries,
+                current-entries: u0,
+                winner: none,
+                active: true
+            }))
+    )
+)
+
+(define-public (submit-entry 
+    (challenge-id uint)
+    (submission-url (string-ascii 200)))
+    (let ((challenge (unwrap! (map-get? artist-challenges {challenge-id: challenge-id}) (err u401))))
+        (asserts! (get active challenge) (err u402))
+        (asserts! (< (get current-entries challenge) (get max-entries challenge)) (err u403))
+        (asserts! (<= stacks-block-height (get end-block challenge)) (err u404))
+        (map-set challenge-entries
+            {challenge-id: challenge-id, participant: tx-sender}
+            {
+                submission-url: submission-url,
+                submission-block: stacks-block-height
+            }
+        )
+        (ok (map-set artist-challenges
+            {challenge-id: challenge-id}
+            (merge challenge {current-entries: (+ (get current-entries challenge) u1)})))
+    )
+)
+
+
+(define-non-fungible-token subscription-badges uint)
+
+(define-map badge-metadata
+    uint
+    {
+        subscriber: principal,
+        artist: principal,
+        tier: uint,
+        subscription-duration: uint,
+        last-updated: uint,
+        badge-level: uint
+    }
+)
+
+(define-data-var next-badge-id uint u1)
+
+(define-public (mint-subscription-badge (artist principal) (tier uint))
+    (let 
+        ((badge-id (var-get next-badge-id))
+         (subscriber tx-sender))
+        (var-set next-badge-id (+ badge-id u1))
+        (try! (nft-mint? subscription-badges badge-id subscriber))
+        (ok (map-set badge-metadata
+            badge-id
+            {
+                subscriber: subscriber,
+                artist: artist,
+                tier: tier,
+                subscription-duration: u0,
+                last-updated: stacks-block-height,
+                badge-level: u1
+            }))
+    )
+)
+
+(define-public (upgrade-badge-level (badge-id uint))
+    (let ((metadata (unwrap! (map-get? badge-metadata badge-id) (err u501))))
+        (asserts! (is-eq tx-sender (get subscriber metadata)) (err u502))
+        (ok (map-set badge-metadata
+            badge-id
+            (merge metadata 
+                {
+                    subscription-duration: (- stacks-block-height (get last-updated metadata)),
+                    last-updated: stacks-block-height,
+                    badge-level: (+ (get badge-level metadata) u1)
+                }
+            )))
+    )
+)
+
