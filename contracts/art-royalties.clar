@@ -215,3 +215,559 @@
         ))
     )
 )
+
+
+;; Timed Exclusive Content
+(define-map exclusive-content
+    {artist: principal, content-id: uint}
+    {
+        title: (string-ascii 100),
+        description: (string-ascii 500),
+        release-block: uint,
+        expiry-block: uint,
+        active: bool
+    }
+)
+
+(define-data-var next-content-id uint u1)
+
+(define-public (create-exclusive-content 
+    (title (string-ascii 100)) 
+    (description (string-ascii 500)) 
+    (duration uint))
+    (let 
+        ((content-id (var-get next-content-id))
+         (current-block stacks-block-height))
+        (map-set exclusive-content
+            {artist: tx-sender, content-id: content-id}
+            {
+                title: title,
+                description: description,
+                release-block: current-block,
+                expiry-block: (+ current-block duration),
+                active: true
+            }
+        )
+        (var-set next-content-id (+ content-id u1))
+        (ok content-id)
+    )
+)
+
+(define-read-only (get-exclusive-content (artist principal) (content-id uint))
+    (let 
+        ((content (map-get? exclusive-content {artist: artist, content-id: content-id}))
+         (current-block stacks-block-height))
+        (if (and 
+                (is-some content) 
+                (get active (unwrap-panic content))
+                (<= (get expiry-block (unwrap-panic content)) current-block))
+            content
+            none
+        )
+    )
+)
+
+
+
+;; Subscription Renewal Reminders
+(define-map renewal-preferences
+    principal
+    {
+        reminder-blocks: uint,  ;; How many blocks before expiry to remind
+        auto-renew: bool
+    }
+)
+
+(define-public (set-renewal-preferences (reminder-blocks uint) (auto-renew bool))
+    (ok (map-set renewal-preferences tx-sender {
+        reminder-blocks: reminder-blocks,
+        auto-renew: auto-renew
+    }))
+)
+
+(define-read-only (check-renewal-needed (subscriber principal) (artist principal))
+    (let
+        ((sub (map-get? subscriptions {subscriber: subscriber, artist: artist}))
+         (prefs (map-get? renewal-preferences subscriber))
+         (current-block stacks-block-height))
+        (if (or (is-none sub) (is-none prefs))
+            false
+            (let 
+                ((expiry (get expires-at (unwrap-panic sub)))
+                 (reminder-threshold (get reminder-blocks (unwrap-panic prefs))))
+                (and 
+                    (<= (- expiry reminder-threshold) current-block)
+                    (> expiry current-block)
+                )
+            )
+        )
+    )
+)
+
+(define-public (auto-renew-subscription (artist principal))
+    (let
+        ((subscriber tx-sender)
+         (prefs (default-to {reminder-blocks: u0, auto-renew: false} 
+                 (map-get? renewal-preferences subscriber)))
+         (sub (map-get? subscriptions {subscriber: subscriber, artist: artist}))
+         (current-block stacks-block-height))
+        (asserts! (get auto-renew prefs) (err u103))
+        (asserts! (is-some sub) ERR-ARTWORK-NOT-FOUND)
+        (try! (stx-transfer? SUBSCRIPTION-PRICE subscriber artist))
+        (ok (map-set subscriptions 
+            {subscriber: subscriber, artist: artist}
+            {
+                expires-at: (+ current-block u144), ;; ~1 day in blocks
+                active: true
+            }
+        ))
+    )
+)
+
+
+;; Enhanced Subscription Tiers
+(define-map subscription-tier-details
+    {artist: principal, tier-id: uint}
+    {
+        name: (string-ascii 50),
+        price: uint,
+        duration: uint,  ;; in blocks
+        benefits: (string-ascii 200),
+        active: bool
+    }
+)
+
+(define-public (create-subscription-tier 
+    (name (string-ascii 50)) 
+    (price uint) 
+    (duration uint) 
+    (benefits (string-ascii 200)))
+    (let ((artist tx-sender))
+        (ok (map-set subscription-tier-details
+            {artist: artist, tier-id: (if (is-eq price BASIC-TIER-PRICE) u1 
+                                       (if (is-eq price PREMIUM-TIER-PRICE) u2 u3))}
+            {
+                name: name,
+                price: price,
+                duration: duration,
+                benefits: benefits,
+                active: true
+            }
+        ))
+    )
+)
+
+(define-public (subscribe-to-tier-with-benefits (artist principal) (tier-id uint))
+    (let
+        ((subscriber tx-sender)
+         (tier (unwrap! (map-get? subscription-tier-details 
+                        {artist: artist, tier-id: tier-id}) 
+                (err u106)))
+         (current-block stacks-block-height))
+        
+        (asserts! (get active tier) (err u107))
+        (try! (stx-transfer? (get price tier) subscriber artist))
+        
+        (ok (map-set subscriptions 
+            {subscriber: subscriber, artist: artist}
+            {
+                expires-at: (+ current-block (get duration tier)),
+                active: true
+            }
+        ))
+    )
+)
+
+(define-read-only (get-subscription-tier-details (artist principal) (tier-id uint))
+    (map-get? subscription-tier-details {artist: artist, tier-id: tier-id})
+)
+
+
+;; Artist Feedback and Rating System
+(define-map artist-ratings
+    principal
+    {
+        total-ratings: uint,
+        rating-sum: uint,
+        feedback-count: uint
+    }
+)
+
+(define-map subscriber-feedback
+    {subscriber: principal, artist: principal}
+    {
+        rating: uint,  ;; 1-5 scale
+        feedback: (string-ascii 500),
+        timestamp: uint
+    }
+)
+
+(define-public (rate-artist (artist principal) (rating uint) (feedback (string-ascii 500)))
+    (let
+        ((subscriber tx-sender)
+         (current-block stacks-block-height)
+         (current-ratings (default-to 
+                          {total-ratings: u0, rating-sum: u0, feedback-count: u0} 
+                          (map-get? artist-ratings artist))))
+        
+        ;; Ensure rating is between 1-5
+        (asserts! (and (>= rating u1) (<= rating u5)) (err u108))
+        
+        ;; Ensure subscriber has an active subscription
+        (asserts! (check-subscription subscriber artist) (err u109))
+        
+        ;; Record the feedback
+        (map-set subscriber-feedback 
+            {subscriber: subscriber, artist: artist}
+            {
+                rating: rating,
+                feedback: feedback,
+                timestamp: current-block
+            }
+        )
+        
+        ;; Update artist ratings
+        (ok (map-set artist-ratings artist {
+            total-ratings: (+ (get total-ratings current-ratings) u1),
+            rating-sum: (+ (get rating-sum current-ratings) rating),
+            feedback-count: (+ (get feedback-count current-ratings) u1)
+        }))
+    )
+)
+
+(define-read-only (get-artist-average-rating (artist principal))
+    (let ((ratings (default-to 
+                  {total-ratings: u0, rating-sum: u0, feedback-count: u0} 
+                  (map-get? artist-ratings artist))))
+        (if (is-eq (get total-ratings ratings) u0)
+            u0
+            (/ (get rating-sum ratings) (get total-ratings ratings))
+        )
+    )
+)
+
+(define-read-only (get-subscriber-feedback (subscriber principal) (artist principal))
+    (map-get? subscriber-feedback {subscriber: subscriber, artist: artist})
+)
+
+
+
+;; Referral Program
+(define-map referrals
+    {referrer: principal, referred: principal}
+    {
+        timestamp: uint,
+        artist: principal,
+        reward-claimed: bool
+    }
+)
+
+(define-map referral-stats
+    principal
+    {
+        total-referrals: uint,
+        rewards-earned: uint
+    }
+)
+
+(define-constant REFERRAL-REWARD-PERCENTAGE u10)  ;; 10% of subscription price
+
+(define-public (subscribe-with-referral (artist principal) (referrer principal))
+    (let
+        ((subscriber tx-sender)
+         (current-block stacks-block-height)
+         (referrer-stats (default-to 
+                         {total-referrals: u0, rewards-earned: u0} 
+                         (map-get? referral-stats referrer))))
+        
+        ;; Ensure referrer is not the same as subscriber
+        (asserts! (not (is-eq subscriber referrer)) (err u110))
+        
+        ;; Process subscription payment
+        (try! (stx-transfer? SUBSCRIPTION-PRICE subscriber artist))
+        
+        ;; Record subscription
+        (map-set subscriptions 
+            {subscriber: subscriber, artist: artist}
+            {
+                expires-at: (+ current-block u144),
+                active: true
+            }
+        )
+        
+        ;; Record referral
+        (map-set referrals
+            {referrer: referrer, referred: subscriber}
+            {
+                timestamp: current-block,
+                artist: artist,
+                reward-claimed: false
+            }
+        )
+        
+        ;; Update referrer stats
+        (ok (map-set referral-stats referrer {
+            total-referrals: (+ (get total-referrals referrer-stats) u1),
+            rewards-earned: (get rewards-earned referrer-stats)
+        }))
+    )
+)
+
+(define-public (claim-referral-reward (referred principal))
+    (let
+        ((referrer tx-sender)
+         (referral (unwrap! (map-get? referrals 
+                           {referrer: referrer, referred: referred}) 
+                  (err u111)))
+         (artist (get artist referral))
+         (reward-amount (/ (* SUBSCRIPTION-PRICE REFERRAL-REWARD-PERCENTAGE) u100))
+         (referrer-stats (default-to 
+                         {total-referrals: u0, rewards-earned: u0} 
+                         (map-get? referral-stats referrer))))
+        
+        ;; Ensure reward hasn't been claimed yet
+        (asserts! (not (get reward-claimed referral)) (err u112))
+        
+        ;; Transfer reward from artist to referrer
+        (try! (stx-transfer? reward-amount artist referrer))
+        
+        ;; Mark referral as claimed
+        (map-set referrals
+            {referrer: referrer, referred: referred}
+            (merge referral {reward-claimed: true})
+        )
+        
+        ;; Update referrer stats
+        (ok (map-set referral-stats referrer {
+            total-referrals: (get total-referrals referrer-stats),
+            rewards-earned: (+ (get rewards-earned referrer-stats) reward-amount)
+        }))
+    )
+)
+
+(define-read-only (get-referral-stats (referrer principal))
+    (default-to 
+        {total-referrals: u0, rewards-earned: u0}
+        (map-get? referral-stats referrer)
+    )
+)
+
+
+
+(define-map collaborations
+    {collaboration-id: uint, artist1: principal, artist2: principal}
+    {
+        title: (string-ascii 100),
+        start-block: uint,
+        end-block: uint,
+        revenue-split: uint,
+        active: bool
+    }
+)
+
+(define-data-var next-collab-id uint u1)
+
+(define-public (create-collaboration 
+    (collaborator principal)
+    (title (string-ascii 100))
+    (duration uint)
+    (split uint))
+    (let
+        ((collab-id (var-get next-collab-id))
+         (current-block stacks-block-height))
+        (asserts! (and (>= split u1) (<= split u99)) (err u200))
+        (ok (map-set collaborations
+            {collaboration-id: collab-id,
+             artist1: tx-sender,
+             artist2: collaborator}
+            {
+                title: title,
+                start-block: current-block,
+                end-block: (+ current-block duration),
+                revenue-split: split,
+                active: true
+            }))
+    )
+)
+
+(define-read-only (get-collaboration (collab-id uint))
+    (map-get? collaborations 
+        {collaboration-id: collab-id,
+         artist1: tx-sender,
+         artist2: tx-sender}
+    )
+)
+
+
+
+(define-map subscription-bundles
+    {bundle-id: uint}
+    {
+        artists: (list 5 principal),
+        bundle-price: uint,
+        duration: uint,
+        max-purchases: uint,
+        purchases: uint,
+        active: bool
+    }
+)
+
+(define-data-var next-bundle-id uint u1)
+
+(define-public (create-subscription-bundle 
+    (artists (list 5 principal))
+    (bundle-price uint)
+    (duration uint)
+    (max-purchases uint))
+    (let
+        ((bundle-id (var-get next-bundle-id)))
+        (var-set next-bundle-id (+ bundle-id u1))
+        (ok (map-set subscription-bundles
+            {bundle-id: bundle-id}
+            {
+                artists: artists,
+                bundle-price: bundle-price,
+                duration: duration,
+                max-purchases: max-purchases,
+                purchases: u0,
+                active: true
+            }))
+    )
+)
+
+(define-public (purchase-bundle (bundle-id uint))
+    (let
+        ((bundle (unwrap! (map-get? subscription-bundles {bundle-id: bundle-id}) (err u300)))
+         (current-block stacks-block-height)
+         (first-artist (unwrap! (element-at (get artists bundle) u0) (err u303))))
+        (asserts! (get active bundle) (err u301))
+        (asserts! (< (get purchases bundle) (get max-purchases bundle)) (err u302))
+        (try! (stx-transfer? (get bundle-price bundle) tx-sender first-artist))
+        (map-set subscription-bundles
+            {bundle-id: bundle-id}
+            (merge bundle {purchases: (+ (get purchases bundle) u1)}))
+        (ok true)
+    )
+)
+
+
+(define-map artist-challenges
+    {challenge-id: uint}
+    {
+        artist: principal,
+        title: (string-ascii 100),
+        prize-amount: uint,
+        start-block: uint,
+        end-block: uint,
+        max-entries: uint,
+        current-entries: uint,
+        winner: (optional principal),
+        active: bool
+    }
+)
+
+(define-map challenge-entries
+    {challenge-id: uint, participant: principal}
+    {
+        submission-url: (string-ascii 200),
+        submission-block: uint
+    }
+)
+
+(define-data-var next-challenge-id uint u1)
+
+(define-public (create-challenge 
+    (title (string-ascii 100))
+    (prize-amount uint)
+    (duration uint)
+    (max-entries uint))
+    (let ((challenge-id (var-get next-challenge-id)))
+        (try! (stx-transfer? prize-amount tx-sender (as-contract tx-sender)))
+        (var-set next-challenge-id (+ challenge-id u1))
+        (ok (map-set artist-challenges
+            {challenge-id: challenge-id}
+            {
+                artist: tx-sender,
+                title: title,
+                prize-amount: prize-amount,
+                start-block: stacks-block-height,
+                end-block: (+ stacks-block-height duration),
+                max-entries: max-entries,
+                current-entries: u0,
+                winner: none,
+                active: true
+            }))
+    )
+)
+
+(define-public (submit-entry 
+    (challenge-id uint)
+    (submission-url (string-ascii 200)))
+    (let ((challenge (unwrap! (map-get? artist-challenges {challenge-id: challenge-id}) (err u401))))
+        (asserts! (get active challenge) (err u402))
+        (asserts! (< (get current-entries challenge) (get max-entries challenge)) (err u403))
+        (asserts! (<= stacks-block-height (get end-block challenge)) (err u404))
+        (map-set challenge-entries
+            {challenge-id: challenge-id, participant: tx-sender}
+            {
+                submission-url: submission-url,
+                submission-block: stacks-block-height
+            }
+        )
+        (ok (map-set artist-challenges
+            {challenge-id: challenge-id}
+            (merge challenge {current-entries: (+ (get current-entries challenge) u1)})))
+    )
+)
+
+
+(define-non-fungible-token subscription-badges uint)
+
+(define-map badge-metadata
+    uint
+    {
+        subscriber: principal,
+        artist: principal,
+        tier: uint,
+        subscription-duration: uint,
+        last-updated: uint,
+        badge-level: uint
+    }
+)
+
+(define-data-var next-badge-id uint u1)
+
+(define-public (mint-subscription-badge (artist principal) (tier uint))
+    (let 
+        ((badge-id (var-get next-badge-id))
+         (subscriber tx-sender))
+        (var-set next-badge-id (+ badge-id u1))
+        (try! (nft-mint? subscription-badges badge-id subscriber))
+        (ok (map-set badge-metadata
+            badge-id
+            {
+                subscriber: subscriber,
+                artist: artist,
+                tier: tier,
+                subscription-duration: u0,
+                last-updated: stacks-block-height,
+                badge-level: u1
+            }))
+    )
+)
+
+(define-public (upgrade-badge-level (badge-id uint))
+    (let ((metadata (unwrap! (map-get? badge-metadata badge-id) (err u501))))
+        (asserts! (is-eq tx-sender (get subscriber metadata)) (err u502))
+        (ok (map-set badge-metadata
+            badge-id
+            (merge metadata 
+                {
+                    subscription-duration: (- stacks-block-height (get last-updated metadata)),
+                    last-updated: stacks-block-height,
+                    badge-level: (+ (get badge-level metadata) u1)
+                }
+            )))
+    )
+)
+

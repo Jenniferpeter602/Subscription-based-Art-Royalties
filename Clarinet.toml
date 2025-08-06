@@ -9,6 +9,19 @@ requirements = []
 path = 'contracts/art-royalties.clar'
 clarity_version = 3
 epoch = 3.1
+
+[contracts.content-access-control_]
+path = 'contracts/content-access-control_.clar'
+clarity_version = 3
+epoch = 3.1
+[contracts.dynamic-pricing]
+path = 'contracts/dynamic-pricing.clar'
+clarity_version = 3
+epoch = 3.1
+[contracts.community-curation]
+path = 'contracts/community-curation.clar'
+clarity_version = 3
+epoch = 3.1
 [repl.analysis]
 passes = ['check_checker']
 
