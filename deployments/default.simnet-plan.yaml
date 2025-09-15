@@ -54,4 +54,24 @@ plan:
             emulated-sender: ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM
             path: "contracts\\art-royalties.clar"
             clarity-version: 3
+        - emulated-contract-publish:
+            contract-name: community-curation
+            emulated-sender: ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM
+            path: "contracts\\community-curation.clar"
+            clarity-version: 3
+        - emulated-contract-publish:
+            contract-name: content-access-control_
+            emulated-sender: ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM
+            path: "contracts\\content-access-control_.clar"
+            clarity-version: 3
+        - emulated-contract-publish:
+            contract-name: dynamic-pricing
+            emulated-sender: ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM
+            path: "contracts\\dynamic-pricing.clar"
+            clarity-version: 3
+        - emulated-contract-publish:
+            contract-name: portfolio-analytics
+            emulated-sender: ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM
+            path: "contracts\\portfolio-analytics.clar"
+            clarity-version: 3
       epoch: "3.1"
