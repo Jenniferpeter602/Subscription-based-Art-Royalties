@@ -69,4 +69,9 @@ plan:
             emulated-sender: ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM
             path: "contracts\\dynamic-pricing.clar"
             clarity-version: 3
+        - emulated-contract-publish:
+            contract-name: portfolio-analytics
+            emulated-sender: ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM
+            path: "contracts\\portfolio-analytics.clar"
+            clarity-version: 3
       epoch: "3.1"
